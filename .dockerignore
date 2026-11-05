@@ -1,0 +1,9 @@
+.env
+.env.*
+.venv/
+.git/
+*.db
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+CLAUDE.local.md
