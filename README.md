@@ -62,7 +62,20 @@ Limit: a Read deny rule doesn't cover every shell route (for example `head .env`
 
 ## Agent Log
 
-Filled in per branch.
+### feature/schema-and-filing ([ORB-5](https://linear.app/orbit-air/issue/ORB-5/featureschema-and-filing-claims-and-history-tables-filing-with))
+
+**Prompt:** "Start branch 1". It pointed Claude Code at the approved plan and Linear issue ORB-5: tables with CHECK constraints, filing with validation, tier deadlines, a filing history row and list filters. Tests come first and fail first. Time is passed in as `now`. Do not edit committed tests.
+
+**What the agent did:**
+- Wrote `tests/conftest.py` (an in-memory `conn` fixture) and `tests/test_claims.py`: 10 test functions, 15 cases with parametrize.
+- Committed the tests alone (`4547858`) and ran them. They failed with `ModuleNotFoundError: No module named 'db'`.
+- Then wrote `db.py` (schema plus `connect`) and `claims.py` (`validate`, `deadline_for`, `file_claim`, `get_claim`, `list_claims`, `history`) in `f566a77`. Result: 15 passed, ruff clean.
+
+**What was checked or changed:**
+- **Correction:** the first attempt to commit the tests was blocked by `ruff check`. Ruff's import-sorting rule (I001) treated `db` and `claims` as third-party because those files didn't exist yet, and it wanted them grouped with `pytest`. "Fixing" the imports would have broken lint again as soon as the modules existed. So the tests stayed as written, and `pyproject.toml` got `known-first-party = ["db", "claims", "main"]`.
+- **The CHECK test really tests the database:** in a scratch copy I deleted the `CHECK (type IN (...))` clause from `db.py` and reran. `test_check_constraints_reject_bad_values[type-stolen]` failed (1 failed, 14 passed), so the test depends on the constraint and not on the Python validation.
+- `grep "now()" db.py claims.py` finds nothing, so no rule code reads the clock.
+- `git diff 4547858 -- tests/` is empty, so the tests were not changed after they were committed.
 
 ## Hidden Instruction Check
 
