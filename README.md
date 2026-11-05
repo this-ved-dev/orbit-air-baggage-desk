@@ -155,7 +155,7 @@ Limit: a Read deny rule doesn't cover every shell route (for example `head .env`
 - **Correction found by running the app by hand:** without `--now`, `datetime.now()` carries microseconds. Deadlines were stored as `2026-11-05T15:12:51.705724`, which broke the `list` columns. The tests didn't catch it because they all pass `--now`. I changed `main.py` to read the clock as `datetime.now().replace(microsecond=0)` before committing.
 - Also by hand: `--now yesterday` gives `argument --now: not an ISO timestamp: 'yesterday'` (exit 2). `list --status lost` gives a clear error (exit 1). `seed nope.csv` gives `Error: [Errno 2] No such file or directory` instead of a traceback.
 - The `.dockerignore` keeps `.env` and any local `claims.db` out of the image. `COPY . .` would otherwise copy the secret into it.
-- The Docker image has not been built yet: the Docker daemon wasn't running on this machine, so stretch goal 4 is unverified so far.
+- The Docker image wasn't built during the branch because the Docker daemon wasn't running. After the merge, with Docker running, I built it and ran the tests and the app in it. The output is under Stretch Goals.
 - `grep "now()" claims.py db.py main.py` matches only `main.py`. `git diff ffdf117 -- tests/` is empty.
 
 ## Hidden Instruction Check
@@ -247,7 +247,34 @@ PreToolUse:Write hook error: ["$CLAUDE_PROJECT_DIR"/.claude/hooks/block_test_edi
 
 **STRETCH GOAL 3: GitHub Actions.** `.github/workflows/ci.yml` runs `ruff check .` and `pytest` on every pull request and on pushes to `main`. It ran green on PRs #1 to #3.
 
-**STRETCH GOAL 4: Dockerfile.** The image installs `requirements.txt` and copies the app; `.dockerignore` keeps `.env` and local settings out. `CMD ["pytest"]` runs the tests. The app runs against a mounted volume so the database survives between `docker run`s (see Test above).
+**STRETCH GOAL 4: Dockerfile.** The image installs `requirements.txt` and copies the app; `.dockerignore` keeps `.env` and local settings out. `CMD ["pytest"]` runs the tests. The app runs against a mounted volume so the database survives between `docker run`s (see Test above). Real output (Docker 29.9.2, image `python:3.12-slim`):
+
+```
+$ docker build -t orbit-air .
+...
+#10 naming to docker.io/library/orbit-air:latest done
+
+$ docker run --rm orbit-air
+tests/test_claims.py ...............                                     [ 26%]
+tests/test_cli.py ........                                               [ 40%]
+tests/test_escalation.py ...............                                 [ 66%]
+tests/test_status.py ...................                                 [100%]
+============================== 57 passed in 0.10s ==============================
+
+$ docker run --rm -v orbit-air-data:/data -w /data orbit-air python /app/main.py --now 2026-11-02T08:00:00 seed /app/seed_claims.csv
+Loaded 12 claims from /app/seed_claims.csv
+
+$ docker run --rm -v orbit-air-data:/data -w /data orbit-air python /app/main.py --now 2026-11-02T12:01:00 escalate
+Escalated claims: 1, 4, 9
+
+$ docker run --rm -v orbit-air-data:/data -w /data orbit-air python /app/main.py list --status escalated
+ id  status     tier      type     flight   passenger         agent       deadline             note
+  1  escalated  gold      lost     OA101    Ana Ruiz          -           2026-11-02T12:00:00  Blue hard-shell suitcase, name tag on handle
+  4  escalated  gold      delayed  OA101    Dina Haddad       -           2026-11-02T12:00:00  Needs medication from the bag tonight
+  9  escalated  gold      damaged  OA620    Ivan Petrov       -           2026-11-02T12:00:00  Handle torn, contents wet
+```
+
+The image was built from the working folder, which holds a real `.env` and `.venv`. Inside it, `test -e /app/.env` and `test -e /app/.venv` both reported absent, so `.dockerignore` works. The tests also pass on Python 3.12, the lab's minimum (local development used 3.14).
 
 ## Code Review
 
