@@ -77,6 +77,19 @@ Limit: a Read deny rule doesn't cover every shell route (for example `head .env`
 - `grep "now()" db.py claims.py` finds nothing, so no rule code reads the clock.
 - `git diff 4547858 -- tests/` is empty, so the tests were not changed after they were committed.
 
+### feature/assign-and-status ([ORB-6](https://linear.app/orbit-air/issue/ORB-6/featureassign-and-status-assign-resolve-close-with-allowed-status))
+
+**Prompt:** "Merge, start branch 2". It pointed Claude Code at ORB-6: assign, resolve and close; one dictionary of allowed changes; disallowed changes rejected with the claim unchanged; a complete history row for every change. Tests first, `now` passed in, tests not edited.
+
+**What the agent did:**
+- Wrote `tests/test_status.py`: 9 test functions, 19 cases. Committed it alone (`0072b0c`) and ran it: **19 failed** (`AttributeError: module 'claims' has no attribute 'assign'`, and the same for the others), while branch 1's 15 still passed.
+- Then added the `ALLOWED` dict, `assign` (rejects a blank agent), `resolve`, `close` and one `_change_status` to `claims.py` (`19c0947`). `_change_status` checks the move against `ALLOWED`, then runs the UPDATE and the history INSERT in one `with conn:` block. Result: 34 passed, ruff clean.
+
+**What was checked or changed:**
+- **Gap found in the tests:** no test checks that `resolve` and `close` keep the assigned agent. In a scratch copy I changed `agent = COALESCE(?, agent)` to `agent = ?`, so resolving would wipe the agent, and **all 34 tests still passed**. A manual run confirmed the real code is right: after assign → resolve → close, `agent` is still `Priya`. I did not add a test after the feature commit, because committed tests stay as written. The gap is recorded here and in the PR instead.
+- Manual check: assigning a closed claim gives `cannot change claim 1 from closed to assigned`. The message names both statuses, as the disallowed-change tests require.
+- `git diff 0072b0c -- tests/` is empty.
+
 ## Hidden Instruction Check
 
 Filled in on `feature/cli`, once `seed_claims.csv` exists.
