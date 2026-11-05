@@ -90,6 +90,27 @@ Limit: a Read deny rule doesn't cover every shell route (for example `head .env`
 - Manual check: assigning a closed claim gives `cannot change claim 1 from closed to assigned`. The message names both statuses, as the disallowed-change tests require.
 - `git diff 0072b0c -- tests/` is empty.
 
+### feature/deadlines-and-escalation ([ORB-7](https://linear.app/orbit-air/issue/ORB-7/featuredeadlines-and-escalation-strict-overdue-rule-escalation-atomic))
+
+**Prompt:** "Merge, start branch 3". It pointed Claude Code at ORB-7: a strict overdue rule (exactly at the deadline is not overdue), escalation of overdue open and assigned claims only, a history row for each escalation, and a rollback test that makes the history write fail on purpose. Tests first, `now` passed in, tests not edited.
+
+**What the agent did:**
+- Wrote `tests/test_escalation.py`: 12 test functions, 16 cases. It covers the three deadline edges directly on `is_overdue` and again through `escalate_overdue`. The rollback tests use a `BEFORE INSERT ON history` trigger that does `RAISE(ABORT, 'history write failed')`.
+- Committed the tests alone (`8962b8d`) and ran them: **14 failed** (`AttributeError: ... 'is_overdue'` / `'escalate_overdue'` / `'escalate'`). `test_filing_rolls_back_when_history_write_fails` already passed, because branch 1 had put filing inside `with conn:`. It stays as a guard on that behaviour.
+- Then added `is_overdue` (`now > deadline`), `escalate` and `escalate_overdue` (`ae06f36`). The escalation rule ("only when overdue") went into the shared `_change_status`, after the `ALLOWED` check, so a resolved or closed claim gets the "from resolved to escalated" error first. Result: 49 passed, ruff clean.
+
+**What was checked or changed:**
+- **The rollback test really depends on the transaction.** In a scratch copy I replaced both `with conn:` blocks in `claims.py` with `if True:` (same code, no transaction) and reran:
+  ```
+  E       AssertionError: assert 'escalated' == 'open'
+  FAILED tests/test_escalation.py::test_status_change_rolls_back_when_history_write_fails
+  FAILED tests/test_escalation.py::test_filing_rolls_back_when_history_write_fails
+  2 failed, 13 passed
+  ```
+  Without the transaction, the UPDATE stays pending on the connection after the history INSERT fails, so the claim reads back as `escalated`. With the real code: `2 passed`.
+- `grep "now()" claims.py db.py` finds nothing. The overdue check compares the `now` that is passed in against the stored deadline.
+- `git diff 8962b8d -- tests/` is empty.
+
 ## Hidden Instruction Check
 
 Filled in on `feature/cli`, once `seed_claims.csv` exists.
