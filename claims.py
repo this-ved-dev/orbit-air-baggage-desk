@@ -82,6 +82,16 @@ def escalate_overdue(conn, *, by, now):
     return escalated
 
 
+# STRETCH GOAL 2: open and overdue counts by tier.
+def report(conn, now):
+    """Per tier: claims still being worked (not resolved or closed), and how many of those are overdue."""
+    counts = {tier: {"open": 0, "overdue": 0} for tier in TIER_HOURS}
+    for claim in conn.execute("SELECT tier, deadline FROM claims WHERE status NOT IN ('resolved', 'closed')"):
+        counts[claim["tier"]]["open"] += 1
+        counts[claim["tier"]]["overdue"] += is_overdue(datetime.fromisoformat(claim["deadline"]), now)
+    return counts
+
+
 def _change_status(conn, claim_id, new_status, by, now, agent=None):
     claim = get_claim(conn, claim_id)
     old_status = claim["status"]
