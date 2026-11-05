@@ -2,7 +2,9 @@
 
 import argparse
 import csv
+import sqlite3
 import sys
+from contextlib import closing
 from datetime import datetime
 
 import claims
@@ -56,18 +58,20 @@ def build_parser():
 
 
 def seed(conn, path, *, by, now):
-    with open(path, newline="", encoding="utf-8") as f:
+    # utf-8-sig also accepts the byte-order mark Excel writes at the start of "CSV UTF-8" files
+    with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames != SEED_COLUMNS:
             raise claims.ClaimError(f"{path} must have the columns {', '.join(SEED_COLUMNS)}")
-        rows = list(reader)
-    # check every row before saving any, so a bad file loads nothing
-    for line, row in enumerate(rows, start=2):
+        rows = [(reader.line_num, row) for row in reader]
+    # check every row before saving any, so a bad row loads nothing
+    for line, row in rows:
         try:
             claims.validate(row["passenger"], row["flight"], row["type"], row["tier"])
         except claims.ClaimError as error:
             raise claims.ClaimError(f"{path} line {line}: {error}") from None
-    for row in rows:
+    # shortcut: one transaction per row, so a database error mid-file keeps the rows before it; fine for small seeds
+    for _, row in rows:
         claims.file_claim(conn, row["passenger"], row["flight"], row["type"], row["tier"], row["note"], by=by, now=now)
     return len(rows)
 
@@ -113,20 +117,22 @@ def run(conn, args, now):
         print(f"{'tier':<8}  {'open':>4}  {'overdue':>7}")
         for tier, counts in claims.report(conn, now).items():
             print(f"{tier:<8}  {counts['open']:>4}  {counts['overdue']:>7}")
+        print("open = not yet resolved or closed (includes assigned and escalated)")
     return 0
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    now = args.now or datetime.now().replace(microsecond=0)  # the only place the real clock is read
-    conn = db.connect()
+    # the only place the real clock is read; whole seconds keep stored times and the list columns tidy
+    # shortcut: naive local time, so deadlines drift by an hour across a DST change; store UTC if that matters
+    now = (args.now or datetime.now()).replace(microsecond=0)
     try:
-        return run(conn, args, now)
-    except (claims.ClaimError, OSError) as error:
+        with closing(db.connect()) as conn:
+            return run(conn, args, now)
+    # ClaimError and UnicodeDecodeError (a non-UTF-8 seed file) are both ValueErrors
+    except (ValueError, OSError, csv.Error, sqlite3.Error) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    finally:
-        conn.close()
 
 
 if __name__ == "__main__":

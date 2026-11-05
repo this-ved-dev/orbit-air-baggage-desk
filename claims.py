@@ -100,14 +100,19 @@ def _change_status(conn, claim_id, new_status, by, now, agent=None):
     if new_status == "escalated" and not is_overdue(datetime.fromisoformat(claim["deadline"]), now):
         raise ClaimError(f"cannot escalate claim {claim_id}: it is not overdue until after {claim['deadline']}")
     with conn:
-        conn.execute(
-            "UPDATE claims SET status = ?, agent = COALESCE(?, agent) WHERE id = ?",
-            (new_status, agent, claim_id),
+        updated = conn.execute(
+            "UPDATE claims SET status = ?, agent = COALESCE(?, agent) WHERE id = ? AND status = ?",
+            (new_status, agent, claim_id, old_status),
         )
+        if updated.rowcount == 0:  # another process changed the claim since we read it
+            raise ClaimError(f"claim {claim_id} changed while it was being updated, try again")
         _record_history(conn, claim_id, old_status, new_status, by, now)
 
 
 def _record_history(conn, claim_id, old_status, new_status, by, now):
+    # raised inside the caller's transaction, so the claim change rolls back with it
+    if not by or not by.strip():
+        raise ClaimError("who made the change (--by) cannot be blank")
     conn.execute(
         "INSERT INTO history (claim_id, old_status, new_status, changed_by, changed_at) VALUES (?, ?, ?, ?, ?)",
         (claim_id, old_status, new_status, by, now.isoformat()),

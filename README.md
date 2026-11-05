@@ -30,13 +30,21 @@ pytest tests/test_claims.py    # one file
 ruff check .                   # lint
 ```
 
-With Docker (stretch goal 4): `docker build -t orbit-air .`, then `docker run --rm orbit-air` runs the tests. `docker run --rm orbit-air python main.py seed seed_claims.csv` runs the app.
+With Docker (stretch goal 4):
+
+```bash
+docker build -t orbit-air .
+docker run --rm orbit-air        # runs the tests
+# run the app; the named volume keeps claims.db between commands
+docker run --rm -v orbit-air-data:/data -w /data orbit-air python /app/main.py seed /app/seed_claims.csv
+docker run --rm -v orbit-air-data:/data -w /data orbit-air python /app/main.py list
+```
 
 ## Walkthrough
 
 | Command | What it does |
 |---|---|
-| `python main.py seed seed_claims.csv` | Loads the 12 sample claims. Every row is checked first, and a bad row (reported by line number) loads nothing. |
+| `python main.py seed seed_claims.csv` | Loads the 12 sample claims. Every row is checked first, and a bad row (reported by line number) loads nothing. Seeding twice loads the claims twice. |
 | `python main.py file "Ana Ruiz" OA101 lost gold --note "Blue suitcase"` | Files a claim. Its status is `open` and its deadline is the filed time + 4 h (gold), 24 h (silver) or 72 h (standard). |
 | `python main.py list --status open --tier gold` | Lists claims. Both filters are optional. |
 | `python main.py --by maria assign 1 Priya` | Assigns an open or escalated claim to an agent. |
@@ -239,8 +247,25 @@ PreToolUse:Write hook error: ["$CLAUDE_PROJECT_DIR"/.claude/hooks/block_test_edi
 
 **STRETCH GOAL 3: GitHub Actions.** `.github/workflows/ci.yml` runs `ruff check .` and `pytest` on every pull request and on pushes to `main`. It ran green on PRs #1 to #3.
 
-**STRETCH GOAL 4: Dockerfile.** The image installs `requirements.txt` and copies the app; `.dockerignore` keeps `.env` out. `CMD ["pytest"]` runs the tests, and `docker run IMAGE python main.py <command>` runs the app.
+**STRETCH GOAL 4: Dockerfile.** The image installs `requirements.txt` and copies the app; `.dockerignore` keeps `.env` and local settings out. `CMD ["pytest"]` runs the tests. The app runs against a mounted volume so the database survives between `docker run`s (see Test above).
 
 ## Code Review
 
-Filled in on `feature/cli` after `/code-review` runs on the last pull request.
+I ran `/code-review` (extra-high effort) on the last pull request, PR #4 `feature/cli`. It reported 14 findings. I reproduced the ones marked "reproduced" by hand before changing anything, and reran every probe after the fix commit. The tests were not changed: all fixes are in `main.py`, `claims.py`, the hook and `.dockerignore`, and the 57 tests still pass.
+
+| # | Finding | What I did |
+|---|---|---|
+| 1 | `main()` only caught `ClaimError`/`OSError`, and `db.connect()` sat outside the `try`. A Latin-1 seed file crashed with a `UnicodeDecodeError` traceback (reproduced). | **Fixed.** `db.connect()` moved inside the `try` (with `contextlib.closing`). Now catches `ValueError` (covers `ClaimError` and `UnicodeDecodeError`), `OSError`, `csv.Error` and `sqlite3.Error`. Latin-1 file: `Error: 'utf-8' codec can't decode ...`, exit 1. Read-only folder: `Error: unable to open database file`, exit 1. |
+| 2 | An Excel "CSV UTF-8" file with a byte-order mark was rejected as having the wrong columns (reproduced). | **Fixed.** Opened with `encoding="utf-8-sig"`. The BOM file now loads. |
+| 3 | `_change_status` read the status outside the transaction, and the UPDATE didn't re-check it, so two processes could both apply a change. | **Fixed.** `UPDATE ... WHERE id = ? AND status = ?`, and a clear error (rolled back) if no row matched. |
+| 4 | `docker run --rm IMAGE python main.py ...` loses `claims.db` after every command. | **Fixed in docs.** The README runs the app with a named volume as the working directory (`-v orbit-air-data:/data -w /data`). |
+| 5 | The test-guard hook failed open if python3 or the JSON parse failed. | **Fixed.** It now exits 2 ("could not read the tool call"). Checked: invalid JSON gives exit 2. |
+| 6 | The hook was case-sensitive, so `Tests/test_cli.py` (the same folder on macOS) got through. | **Fixed.** The path is resolved with `realpath` and lower-cased before matching. Checked: `Tests/test_cli.py` and `claims.py/../tests/x.py` give exit 2, `main.py` gives exit 0. |
+| 7 | Naive local timestamps drift by an hour across DST changes. | **Not fixed, documented.** A `shortcut:` comment where the clock is read. Storing UTC would change every stored and displayed time and what `--now` means. Out of scope for this lab, and noted as the upgrade path. |
+| 8 | `report`'s "open" column also counts assigned and escalated claims, unlike `list --status open`. | **Clarified.** I kept the lab's wording, so "open" means not yet resolved or closed. `report` now prints that definition under the table. |
+| 9 | The seed error line number was wrong after a quoted note spanning two lines. | **Fixed.** Uses `reader.line_num`. Checked: a bad row on physical line 4 is reported as `line 4`. |
+| 10 | A blank `--by` stored a history entry with no "who" (reproduced). | **Fixed.** `_record_history` rejects a blank `by` inside the transaction, so the change rolls back. Checked: `--by " "` gives `Error: who made the change (--by) cannot be blank`, and no claim is saved. |
+| 11 | The microsecond fix only covered the real clock, not a fractional `--now`. | **Fixed.** Both sources are truncated: `(args.now or datetime.now()).replace(microsecond=0)`. Checked: `--now 2026-11-02T08:00:00.5` stores deadline `2026-11-02T12:00:00`. |
+| 12 | `seed` commits once per row, so a database error mid-file keeps the earlier rows. | **Not fixed, documented.** A `shortcut:` comment in `seed`. Validation (the realistic failure) still runs on every row first, so a bad row loads nothing. One transaction for big imports is the upgrade. |
+| 13 | Running `seed` twice duplicates the claims. | **Not fixed, documented** in the walkthrough. The lab asks for a loader, not de-duplication, and it's unclear which fields would make two claims "the same". |
+| 14 | `.dockerignore` missed `.claude/settings.local.json`. | **Fixed.** Added. |
