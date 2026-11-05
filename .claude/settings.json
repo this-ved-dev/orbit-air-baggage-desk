@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Bash(cat .env*)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && out=$(.venv/bin/python -m pytest -q 2>&1); rc=$?; if [ $rc -ne 0 ] && [ $rc -ne 5 ]; then printf '%s\\n' \"$out\" | tail -n 30 >&2; echo 'Tests are failing. Fix the code, not the tests, before finishing.' >&2; exit 2; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
