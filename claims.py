@@ -1,4 +1,4 @@
-"""Claim rules: filing, validation, deadlines and history.
+"""Claim rules: filing, validation, deadlines, status changes and history.
 
 Nothing here reads the clock. Every function that needs the time takes `now`.
 """
@@ -8,6 +8,13 @@ from datetime import timedelta
 TYPES = ("delayed", "lost", "damaged")
 TIER_HOURS = {"gold": 4, "silver": 24, "standard": 72}
 STATUSES = ("open", "assigned", "escalated", "resolved", "closed")
+ALLOWED = {
+    "open": {"assigned", "escalated"},
+    "assigned": {"resolved", "escalated"},
+    "escalated": {"assigned", "resolved"},
+    "resolved": {"closed"},
+    "closed": set(),
+}
 
 
 class ClaimError(ValueError):
@@ -39,6 +46,32 @@ def file_claim(conn, passenger, flight, claim_type, tier, note="", *, by, now):
         )
         _record_history(conn, cur.lastrowid, None, "open", by, now)
     return cur.lastrowid
+
+
+def assign(conn, claim_id, agent, *, by, now):
+    if not agent or not agent.strip():
+        raise ClaimError("agent name cannot be blank")
+    _change_status(conn, claim_id, "assigned", by, now, agent=agent)
+
+
+def resolve(conn, claim_id, *, by, now):
+    _change_status(conn, claim_id, "resolved", by, now)
+
+
+def close(conn, claim_id, *, by, now):
+    _change_status(conn, claim_id, "closed", by, now)
+
+
+def _change_status(conn, claim_id, new_status, by, now, agent=None):
+    old_status = get_claim(conn, claim_id)["status"]
+    if new_status not in ALLOWED[old_status]:
+        raise ClaimError(f"cannot change claim {claim_id} from {old_status} to {new_status}")
+    with conn:
+        conn.execute(
+            "UPDATE claims SET status = ?, agent = COALESCE(?, agent) WHERE id = ?",
+            (new_status, agent, claim_id),
+        )
+        _record_history(conn, claim_id, old_status, new_status, by, now)
 
 
 def _record_history(conn, claim_id, old_status, new_status, by, now):
