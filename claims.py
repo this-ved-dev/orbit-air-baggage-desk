@@ -1,9 +1,9 @@
-"""Claim rules: filing, validation, deadlines, status changes and history.
+"""Claim rules: filing, validation, deadlines, status changes, escalation and history.
 
 Nothing here reads the clock. Every function that needs the time takes `now`.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 TYPES = ("delayed", "lost", "damaged")
 TIER_HOURS = {"gold": 4, "silver": 24, "standard": 72}
@@ -36,6 +36,10 @@ def deadline_for(tier, filed_at):
     return filed_at + timedelta(hours=TIER_HOURS[tier])
 
 
+def is_overdue(deadline, now):
+    return now > deadline
+
+
 def file_claim(conn, passenger, flight, claim_type, tier, note="", *, by, now):
     validate(passenger, flight, claim_type, tier)
     with conn:
@@ -62,10 +66,29 @@ def close(conn, claim_id, *, by, now):
     _change_status(conn, claim_id, "closed", by, now)
 
 
+def escalate(conn, claim_id, *, by, now):
+    _change_status(conn, claim_id, "escalated", by, now)
+
+
+def escalate_overdue(conn, *, by, now):
+    candidates = conn.execute(
+        "SELECT id, deadline FROM claims WHERE status IN ('open', 'assigned') ORDER BY id"
+    ).fetchall()
+    escalated = []
+    for claim in candidates:
+        if is_overdue(datetime.fromisoformat(claim["deadline"]), now):
+            escalate(conn, claim["id"], by=by, now=now)
+            escalated.append(claim["id"])
+    return escalated
+
+
 def _change_status(conn, claim_id, new_status, by, now, agent=None):
-    old_status = get_claim(conn, claim_id)["status"]
+    claim = get_claim(conn, claim_id)
+    old_status = claim["status"]
     if new_status not in ALLOWED[old_status]:
         raise ClaimError(f"cannot change claim {claim_id} from {old_status} to {new_status}")
+    if new_status == "escalated" and not is_overdue(datetime.fromisoformat(claim["deadline"]), now):
+        raise ClaimError(f"cannot escalate claim {claim_id}: it is not overdue until after {claim['deadline']}")
     with conn:
         conn.execute(
             "UPDATE claims SET status = ?, agent = COALESCE(?, agent) WHERE id = ?",
