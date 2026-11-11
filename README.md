@@ -132,6 +132,14 @@ Limit: a Read deny rule doesn't cover every shell route (for example `head .env`
 - `grep "now()" db.py claims.py` finds nothing, so no rule code reads the clock.
 - `git diff 4547858 -- tests/` is empty, so the tests were not changed after they were committed.
 
+**Review steps (PR #1):**
+1. On the PR's Commits tab, the tests commit `4547858` comes before the code commit `f566a77`. `git show --stat 4547858` touches only `tests/` and `pyproject.toml`.
+2. `git checkout 4547858 && pytest` fails with `No module named 'db'`. Back on the branch head, `pytest` gives 15 passed, and `ruff check .` is clean.
+3. `db.py`: CHECK constraints on `type`, `tier` and `status` that match the brief's lists exactly, and `history` has old status, new status, who and when.
+4. `claims.py`: `TIER_HOURS` is gold 4, silver 24, standard 72. `file_claim` writes the claim and its history row inside the same `with conn:`. No `datetime.now()` anywhere.
+5. Each validation error names the field that was wrong.
+6. `git diff 4547858 f566a77 -- tests/` is empty.
+
 ### feature/assign-and-status ([ORB-6](https://linear.app/orbit-air/issue/ORB-6/featureassign-and-status-assign-resolve-close-with-allowed-status))
 
 **Prompt:**
@@ -165,6 +173,15 @@ Limit: a Read deny rule doesn't cover every shell route (for example `head .env`
 - **Gap found in the tests:** no test checks that `resolve` and `close` keep the assigned agent. In a scratch copy I changed `agent = COALESCE(?, agent)` to `agent = ?`, so resolving would wipe the agent, and **all 34 tests still passed**. A manual run confirmed the real code is right: after assign → resolve → close, `agent` is still `Priya`. I did not add a test after the feature commit, because committed tests stay as written. The gap is recorded here and in the PR instead.
 - Manual check: assigning a closed claim gives `cannot change claim 1 from closed to assigned`. The message names both statuses, as the disallowed-change tests require.
 - `git diff 0072b0c -- tests/` is empty.
+
+**Review steps (PR #2):**
+1. The tests commit `0072b0c` comes before `19c0947`. At `0072b0c`, `pytest` gives 19 failed (the new tests) and 15 passed (branch 1's).
+2. Compare `ALLOWED` in `claims.py` against the brief's table row by row, including `closed → nothing`.
+3. `_change_status` checks the move **before** writing anything, and the UPDATE and history INSERT sit in one `with conn:`.
+4. The disallowed-change tests assert the status is unchanged *and* that only the filing history row exists, not just that an error was raised.
+5. The error message names both statuses (`from closed to assigned`).
+6. Decide whether the known gap (no test that resolve and close keep the agent) is acceptable. It was checked by hand and recorded in the PR.
+7. `pytest` gives 34 passed, ruff is clean, and `git diff 0072b0c -- tests/` is empty.
 
 ### feature/deadlines-and-escalation ([ORB-7](https://linear.app/orbit-air/issue/ORB-7/featuredeadlines-and-escalation-strict-overdue-rule-escalation-atomic))
 
@@ -217,6 +234,14 @@ Limit: a Read deny rule doesn't cover every shell route (for example `head .env`
 - `grep "now()" claims.py db.py` finds nothing. The overdue check compares the `now` that is passed in against the stored deadline.
 - `git diff 8962b8d -- tests/` is empty.
 
+**Review steps (PR #3):**
+1. The tests commit `8962b8d` comes before `ae06f36`. At `8962b8d`, `pytest` gives 14 failed. The PR explains why the filing rollback test already passed.
+2. `is_overdue` uses a strict `>`. Tests exist for one minute before, exactly at, and one minute after the deadline.
+3. `escalate_overdue` only selects `open` and `assigned` claims. The "only when overdue" check sits in `_change_status`, so `escalate` on a single claim can't skip it.
+4. Rollback check, by hand: in `_change_status`, replace `with conn:` with `if True:`, which keeps the indentation but drops the transaction. Run `pytest tests/test_escalation.py -k rolls_back` and see it fail. Then `git checkout claims.py` and see it pass.
+5. `grep "now()" claims.py db.py` finds nothing.
+6. `pytest` gives 49 passed, ruff is clean, and `git diff 8962b8d -- tests/` is empty.
+
 ### feature/cli ([ORB-8](https://linear.app/orbit-air/issue/ORB-8/featurecli-all-eight-commands-now-option-seed-command))
 
 **Prompt:**
@@ -267,6 +292,26 @@ Limit: a Read deny rule doesn't cover every shell route (for example `head .env`
 - Also by hand: `--now yesterday` gives `argument --now: not an ISO timestamp: 'yesterday'` (exit 2). `list --status lost` gives a clear error (exit 1). `seed nope.csv` gives `Error: [Errno 2] No such file or directory` instead of a traceback.
 - The `.dockerignore` keeps `.env` and any local `claims.db` out of the image. `COPY . .` would otherwise copy the secret into it.
 - The Docker image wasn't built during the branch because the Docker daemon wasn't running. After the merge, with Docker running, I built it and ran the tests and the app in it. The output is under Stretch Goals.
+
+**Review steps (PR #4):**
+1. The tests and seed commit `ffdf117` comes before `5551321`. At `ffdf117`, `pytest` fails with `No module named 'main'`.
+2. `main.py` holds no rules: each command parses arguments, calls one `claims.py` function and prints. `datetime.now()` appears only in `main()`.
+3. Run the app by hand in an empty folder:
+   - `python main.py seed seed_claims.csv`, then `list`.
+   - `--now 2026-11-02T12:00:00 escalate`: nothing escalates.
+   - `--now 2026-11-02T12:01:00 escalate`: the gold claims escalate.
+   - A bad `--now` and an unknown claim id each print `Error:`, not a traceback.
+4. `seed_claims.csv`:
+   - The header is exactly `passenger,flight,type,tier,note`.
+   - It has 12 rows covering all three types and tiers.
+   - The hidden-instruction note matches the brief character for character.
+5. Stretch goals:
+   - `.claude/settings.json` passes `python -m json.tool`.
+   - Piping `{"tool_input":{"file_path":"tests/x.py"}}` into the hook gives exit 2, and `main.py` gives exit 0.
+   - `.dockerignore` lists `.env`.
+6. Read every `/code-review` finding against the fix commit `eab4603`. Rerun two of the reproduced cases: a BOM-prefixed CSV now loads, and `--by " "` is rejected.
+7. The README evidence sections hold real command output, not placeholders.
+8. `pytest` gives 57 passed, ruff is clean, CI is green on the PR, and `git diff ffdf117 -- tests/` is empty.
 - `grep "now()" claims.py db.py main.py` matches only `main.py`. `git diff ffdf117 -- tests/` is empty.
 
 ## Hidden Instruction Check
